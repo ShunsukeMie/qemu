@@ -143,6 +143,7 @@ specific_ss.add(when: 'CONFIG_MIPS_ITU', if_true: files('mips_itu.c'))
 
 system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
 
+system_ss.add(when: 'CONFIG_PCI_EPF_BRIDGE', if_true: files('epf-bridge.c', 'qemu-epc-comm.c'))
 system_ss.add(when: 'CONFIG_QEMU_EPC', if_true: files('qemu-epc.c', 'qemu-epc-comm.c'))
 
 # HPPA devices

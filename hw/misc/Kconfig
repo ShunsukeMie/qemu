@@ -186,6 +186,10 @@ config AXP2XX_PMU
     bool
     depends on I2C
 
+config PCI_EPF_BRIDGE
+    default y if PCI_DEVICES
+    bool
+
 config QEMU_EPC
     default y if PCI_DEVICES
     bool
