@@ -19,6 +19,7 @@
 #include "hw/remote/memory.h"
 #include "hw/remote/iohub.h"
 #include "sysemu/reset.h"
+#include "qemu/log.h"
 
 static void process_config_write(QIOChannel *ioc, PCIDevice *dev,
                                  MPQemuMsg *msg, Error **errp);
@@ -38,13 +39,16 @@ void coroutine_fn mpqemu_remote_msg_loop_co(void *data)
     assert(com->ioc);
 
     pci_dev = com->dev;
+    qemu_log("%s:%d\n", __func__, __LINE__);
     for (; !local_err;) {
         MPQemuMsg msg = {0};
 
+        qemu_log("%s:%d\n", __func__, __LINE__);
         if (!mpqemu_msg_recv(&msg, com->ioc, &local_err)) {
             break;
         }
 
+        qemu_log("%s:%d\n", __func__, __LINE__);
         if (!mpqemu_msg_valid(&msg)) {
             error_setg(&local_err, "Received invalid message from proxy"
                                    "in remote process pid="FMT_pid"",
@@ -52,6 +56,7 @@ void coroutine_fn mpqemu_remote_msg_loop_co(void *data)
             break;
         }
 
+        qemu_log("request cmd: %d\n", msg.cmd);
         switch (msg.cmd) {
         case MPQEMU_CMD_PCI_CFGWRITE:
             process_config_write(com->ioc, pci_dev, &msg, &local_err);
@@ -66,13 +71,26 @@ void coroutine_fn mpqemu_remote_msg_loop_co(void *data)
             process_bar_read(com->ioc, &msg, &local_err);
             break;
         case MPQEMU_CMD_SYNC_SYSMEM:
-            remote_sysmem_reconfig(&msg, &local_err);
+            if (com->is_system) {
+                // remote_sysmem_reconfig(&msg, &local_err);
+                qemu_log("call MPQEMU_CMD_SYNC_SYSMEM for system\n");
+            } else {
+                qemu_log("call MPQEMU_CMD_SYNC_SYSMEM for device\n");
+                // remote_device_reconfig(comm, &msg, &local_err);
+            }
             break;
         case MPQEMU_CMD_SET_IRQFD:
-            process_set_irqfd_msg(pci_dev, &msg);
+            if (com->is_system) {
+                process_set_irqfd_msg(pci_dev, &msg);
+            } else {
+                qemu_log("call MPQEMU_CMD_SET_IRQFD for device\n");
+                // process_set_irq_fdmsg(pci_dev, &msg);
+            }
             break;
         case MPQEMU_CMD_DEVICE_RESET:
-            process_device_reset_msg(com->ioc, pci_dev, &local_err);
+            if (com->is_system) {
+                process_device_reset_msg(com->ioc, pci_dev, &local_err);
+            }
             break;
         default:
             error_setg(&local_err,

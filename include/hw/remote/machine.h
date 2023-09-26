@@ -28,10 +28,15 @@ struct RemoteMachineState {
     bool auto_shutdown;
 };
 
+/* TODO Following struct should be moved to other file. it is not rely for the remote machine and 
+ * used also for others. */
 /* Used to pass to co-routine device and ioc. */
 typedef struct RemoteCommDev {
     PCIDevice *dev;
     QIOChannel *ioc;
+
+    /* TODO add comment */
+    bool is_system;
 } RemoteCommDev;
 
 #define TYPE_REMOTE_MACHINE "x-remote-machine"

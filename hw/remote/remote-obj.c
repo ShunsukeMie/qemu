@@ -118,6 +118,7 @@ static void remote_object_machine_done(Notifier *notifier, void *data)
     *comdev = (RemoteCommDev) {
         .ioc = ioc,
         .dev = PCI_DEVICE(dev),
+        .is_system = true,
     };
 
     co = qemu_coroutine_create(mpqemu_remote_msg_loop_co, comdev);
