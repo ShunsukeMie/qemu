@@ -64,9 +64,7 @@ help をみるに、--user-device を指定することでできそうな雰囲�
 
 ## 実装
 
-
-
-vfu_object_init_ctx(): libvfio-user のコンテキスト(VfuObject*)を初期化する。
+vfu_object_init_ctx(): QEMU Object(VfuObject) のもつlibvfio-user のコンテキスト(vfu_ctx)を初期化する。
 後述のsocket, device の指定は必須みたい。コメントにある
     - o->vfu_ctx = vfu_create_ctx(socket_path)
     - dev = qdev_find_recursive(o->device)
@@ -124,3 +122,15 @@ vfu_create_ctx で設定していた
     
 
 tran_sock_ops は、subprojects/libvfio-user/lib/tran_sock.c にいろいろある。
+
+QEMU の、Object とはなにか。
+
+
+API としてみた時にどう使うか、
+header は？
+
+- libvfio-user <br>
+subprojects/libvfio-user/include/libvfio-user.h
+
+vfu_create_ctx()
+vfu_pci_init()
