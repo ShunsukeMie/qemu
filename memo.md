@@ -125,7 +125,6 @@ tran_sock_ops は、subprojects/libvfio-user/lib/tran_sock.c にいろいろあ�
 
 QEMU の、Object とはなにか。
 
-
 API としてみた時にどう使うか、
 header は？
 
@@ -134,3 +133,87 @@ subprojects/libvfio-user/include/libvfio-user.h
 
 vfu_create_ctx()
 vfu_pci_init()
+vfu_setup_region()
+vfu_setup_device_dma()
+dma_controller_create() を dma の最大数、最大サイズでやっているだけ。
+dma_register, dma_unregister の callback を登録しているので、話の先はそちらっぽい
+
+dma_register (QEMUでは) vfu_dma_info_t に vaddr, iova 等が入ってくるみたい
+MemoryRegion を作る
+memory_region_init_ram_ptr
+pci_device_iommu_address_space
+memory_region_add_subregion
+
+vfu_object_register_bars()
+vfu_object_setup_irqs()
+vfu_setup_device_reset_cb()
+vfu_realize_ctx()
+実装を見るに、最後の仕上げ。pci config spaceがまだ設定されていなければ確保。BAR の flag を適切に設定。
+割り込みもや、config space の capability についても。多分何もなかった場合のチェーンを設定している。
+そして、ctx->realized = true にする。
+
+vfu_get_poll_fd()
+抽象化のAPI。今回は socket なので、その実装であるtran_sock.cの中身を追う。
+ts->conn_fd が有効であれば、ts->conn_fd を、
+そうでなければ、 ts->listen_fd を。
+なので、vfu_attach_ctx(後述) 後は、通信に用いる conn_fd を、それ以前は、 listen_fd を返す。　
+
+vfu_attach_ctx()
+抽象化のAPI。今回は socket なので、その実装であるtran_sock.cの中身を追う。
+具体的に読んでいるのは、 accept() その結果を、ts->conn_fd に入れている。
+accept() 後は、最初のバージョンチェック等のやり取りをする。
+
+vfu_run_ctx()
+ctx->realized が true かどうか。
+loop
+    ctx->pending.state のチェック（VFU_CTX_PENDING_NONE) の時はエラー（これはどう言うふうに変わる？）
+    get_request()
+    handle_request()
+end loop
+
+handle_request() : RC からの要求。TLP相当だと思われ。
+- handle_dma_map()
+- handle_region_access() 
+
+逆向きは？　: EP からのTLP. 多分 APIがあるはず。
+多分DMAとある周りだと思うが、わかっていないのでこれを明らかにする。
+
+vfu_destroy_ctx()
+vfu_object_restore_msi_cbs()
+
+
+DMA 周りがわからないので、デバイスエミュレーション側で呼び出す、pci_dma_read/write から調査してみる。
+include/hw/pci/pci_device.h
+
+pci_dma_read/pci_dma_write
+    pci_dma_rw
+        dma_memory_rw
+            dma_memory_rw_relaxed
+                address_space_rw
+                    address_space_write
+                    address_space_read_full
+
+mr->ops->read が使えるところは使っている。
+↑これに vfio の region は登録するのが良さそうな雰囲気を感じるが、実装がどうなっているかについてはこれから調べる。
+
+handle_dma_map
+    fd = consume_fd
+    dma_controller_add_region
+        dma_map_region
+            mmap
+        dma->regions を更新する。
+            ↑多分これをどこかで使っている。
+    ctx->dma_register()
+        memory_regon_init_ram_ptr
+        pci_device_iommu_address_space
+        memory_region_add_subregion
+
+↑このながれで登録ができる。
+
+全体の流れを整理すると、
+1. vfio-user のプロトコルの VFIO_USER_DMA_MAP が届く (fd と共に）
+2. 届いたfd で mmap を行う
+3. あたらに Qemu の MemoryRegion を作成して、mmap した領域を登録
+4. pci の iommu address space に MemoryRegion を登録
+
+ここまでくると、デバイスのアクセスは、MemoryRegionの仕組みでアクセスされる。
