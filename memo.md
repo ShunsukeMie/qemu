@@ -217,3 +217,5 @@ handle_dma_map
 4. pci の iommu address space に MemoryRegion を登録
 
 ここまでくると、デバイスのアクセスは、MemoryRegionの仕組みでアクセスされる。
+
+
