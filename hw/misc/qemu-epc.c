@@ -5,12 +5,23 @@
 #include "qemu/osdep.h"
 #include "qom/object.h"
 
+#include "qemu/log.h"
+
 #include "qapi/error.h"
 #include "qapi/qapi-visit-sockets.h"
 
 #include "hw/pci/pci_device.h"
 
 #include "libvfio-user.h"
+
+#define DEBUG_QEMU_EPC
+#ifdef DEBUG_QEMU_EPC
+#define qemu_epc_debug(fmt, ...) qemu_log("qemu_epc: " fmt "\n", ## __VA_ARGS__)
+#else
+#define qemu_epc_debug(...)                                                    \
+  do {                                                                         \
+  } while (0)
+#endif
 
 struct QEPCState {
   /*< private >*/
@@ -55,7 +66,7 @@ enum {
 static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
   QEPCState *s = opaque;
 
-  // qemu_epc_debug("CTRL read: addr 0x%lx, size 0x%x\n", addr, size);
+  qemu_epc_debug("CTRL read: addr 0x%lx, size 0x%x", addr, size);
 
   switch (addr) {
   case QEPC_CTRL_OFF_WIN_START:
@@ -75,7 +86,7 @@ static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
 static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
-    // QEPCState *s = vfu_get_private(vfu_ctx);
+  // QEPCState *s = vfu_get_private(vfu_ctx);
 
   return count;
 }
@@ -96,14 +107,15 @@ static void *qepc_thread(void *opaque) {
   }
 
   err = vfu_setup_region(s->vfu, VFU_PCI_DEV_CFG_REGION_IDX,
-                         PCIE_CONFIG_SPACE_SIZE, &qepc_pci_cfg_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB,
-                         NULL, 0, -1, 0);
+                         PCIE_CONFIG_SPACE_SIZE, &qepc_pci_cfg_access,
+                         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB, NULL,
+                         0, -1, 0);
 
-    // setup bars
-    // setup irqs
-    // vfu_realize_ctx
-    // vfu_get_poll_fd
-    // qemu_set_fd_handler(pollfd, );
+  // setup bars
+  // setup irqs
+  // vfu_realize_ctx
+  // vfu_get_poll_fd
+  // qemu_set_fd_handler(pollfd, );
 
   return NULL;
 }
@@ -118,7 +130,7 @@ static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
   QEPCState *s = opaque;
   // uint64_t *tmp;
 
-  // qemu_epc_debug("CTRL write: addr 0x%lx, size 0x%x\n", addr, size);
+  qemu_epc_debug("CTRL write: addr 0x%lx, size 0x%x", addr, size);
 
   switch (addr) {
   case QEPC_CTRL_OFF_START:
@@ -169,6 +181,7 @@ static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps qepc_ctrl_mmio_ops = {
     .read = qepc_ctrl_mmio_read,
     .write = qepc_ctrl_mmio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 #define NUM_OB_WINDOW 5
@@ -177,10 +190,12 @@ static const MemoryRegionOps qepc_ctrl_mmio_ops = {
 static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   QEPCState *s = QEMU_EPC(pci_dev);
 
+  qemu_epc_debug("realize");
+
   memory_region_init_io(&s->ctrl_mr, OBJECT(s), &qepc_ctrl_mmio_ops, s,
                         "qemu-epc/ctrl", pow2ceil(QEPC_CTRL_SIZE));
-  memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
-                     pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
+  // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
+  //                    pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
 
   // memory_region_init_io(&s->cfg_cfg_mr, OBJECT(s),
   // &qemu_epc_mmio_pci_cfg_ops,
@@ -199,8 +214,8 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   //                  PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
   // pci_register_bar(pci_dev, QEMU_EPC_BAR_BAR_CFG,
   //                  PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
-  pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
-                   &s->ob_window_mr);
+  // pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
+  //                  &s->ob_window_mr);
 }
 
 static void qepc_object_set_socket(Object *obj, Visitor *v, const char *name,
@@ -222,6 +237,8 @@ static void qepc_class_init(ObjectClass *klass, void *data) {
   PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
   // QEPCState *state = QEMU_EPC_CLASS(klass);
 
+  qemu_epc_debug("initialize class");
+
   object_class_property_add(klass, "socket", "SocketAddress", NULL,
                             qepc_object_set_socket, NULL, NULL);
 
@@ -236,18 +253,11 @@ static void qepc_class_init(ObjectClass *klass, void *data) {
   set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 
-static void qepc_instance_init(Object *obj) {
-  // QEPCState *state = QEMU_EPC(obj);
-
-  // state->vfu = vfu_create_ctx(VFU_TRANS_SOCK, );
-}
-
 static const TypeInfo qepc_info = {
     .name = TYPE_QEMU_EPC,
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(QEPCState),
     .class_init = qepc_class_init,
-    .instance_init = qepc_instance_init,
     .interfaces = (InterfaceInfo[]){{INTERFACE_CONVENTIONAL_PCI_DEVICE}, {}},
 };
 
