@@ -28,9 +28,10 @@ struct QEPCState {
   PCIDevice dev;
 
   vfu_ctx_t *vfu;
+    int vfu_fd;
   const char *vfu_sock_path;
 
-  SocketAddress *socket;
+  const char *sock_path;
 
   /*< public >*/
   MemoryRegion ctrl_mr, pci_cfg_mr, bar_cfg_mr;
@@ -91,11 +92,14 @@ static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
   return count;
 }
 
+/*
 static void *qepc_thread(void *opaque) {
   int err;
   QEPCState *s = opaque;
 
-  s->vfu = vfu_create_ctx(VFU_TRANS_SOCK, s->socket->u.q_unix.path,
+  qemu_epc_debug("start thread vfu thread");
+
+  s->vfu = vfu_create_ctx(VFU_TRANS_SOCK, s->sock_path,
                           LIBVFIO_USER_FLAG_ATTACH_NB, s, VFU_DEV_TYPE_PCI);
   if (!s->vfu) {
     return NULL;
@@ -110,19 +114,121 @@ static void *qepc_thread(void *opaque) {
                          PCIE_CONFIG_SPACE_SIZE, &qepc_pci_cfg_access,
                          VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB, NULL,
                          0, -1, 0);
-
+  if (err) {
+    qemu_epc_debug("failed at vfu_setup_region");
+    return NULL;
+  }
   // setup bars
   // setup irqs
   // vfu_realize_ctx
+  err = vfu_realize_ctx(s->vfu);
+  if (err) {
+    qemu_epc_debug("failed at vfu_realize_ctx");
+    return NULL;
+  }
   // vfu_get_poll_fd
   // qemu_set_fd_handler(pollfd, );
 
+
   return NULL;
 }
+*/
 
-static void qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
-  qemu_thread_create(&s->thread, "qemu-epc", qepc_thread, s,
-                     QEMU_THREAD_JOINABLE);
+static void qepc_vfu_run(void *opaque)
+{
+    QEPCState *s = opaque;
+    int err = -1;
+
+    qemu_epc_debug("starting vfu main loop");
+
+    while(err != 0) {
+        err = vfu_run_ctx(s->vfu);
+        if (err < 0) {
+            if (errno == EINTR) {
+                continue;
+            } else if (errno == ENOTCONN){
+                break;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+static void qepc_vfu_attach_ctx(void *opaque)
+{
+    QEPCState *s = opaque;
+    int err;
+
+    qemu_epc_debug("attach vfu client");
+    qemu_set_fd_handler(s->vfu_fd, NULL, NULL, NULL);
+
+retry:
+    err = vfu_attach_ctx(s->vfu);
+    if (err < 0) {
+        if (err == EAGAIN || errno == EWOULDBLOCK) {
+            goto retry;
+        }
+        return;
+    }
+
+    s->vfu_fd = vfu_get_poll_fd(s->vfu);
+    if (s->vfu_fd < 0) {
+        return;
+    }
+
+    qemu_set_fd_handler(s->vfu_fd, qepc_vfu_run, NULL, s);
+}
+
+static void qepc_vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *msg){
+    qemu_epc_debug("vfu: %d: %s", level, msg);
+}
+
+static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
+  int err;
+
+  s->vfu = vfu_create_ctx(VFU_TRANS_SOCK, s->sock_path,
+                          LIBVFIO_USER_FLAG_ATTACH_NB, s, VFU_DEV_TYPE_PCI);
+  if (!s->vfu) {
+    qemu_epc_debug("failed at vfu_create_ctx");
+    return -1;
+  }
+
+  vfu_setup_log(s->vfu, qepc_vfu_log, LOG_DEBUG);
+
+  err = vfu_pci_init(s->vfu, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
+  if (err) {
+    qemu_epc_debug("failed at vfu_pci_init");
+    return -1;
+  }
+
+  err = vfu_setup_region(s->vfu, VFU_PCI_DEV_CFG_REGION_IDX,
+                         PCIE_CONFIG_SPACE_SIZE, &qepc_pci_cfg_access,
+                         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB, NULL,
+                         0, -1, 0);
+  if (err) {
+    qemu_epc_debug("failed at vfu_setup_region");
+    return -1;
+  }
+  // setup bars
+  // setup irqs
+  
+  err = vfu_realize_ctx(s->vfu);
+  if (err) {
+    qemu_epc_debug("failed at vfu_realize_ctx");
+    return -1;
+  }
+
+  s->vfu_fd = vfu_get_poll_fd(s->vfu);
+  if (s->vfu_fd < 0) {
+       qemu_epc_debug("failed at vfu_get_poll_fd");
+        return -1;
+  }
+
+  qemu_epc_debug("listening vfu connection from %s", s->sock_path);
+  qemu_set_fd_handler(s->vfu_fd, qepc_vfu_attach_ctx, NULL, s);
+
+  return 0;
 }
 
 static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
@@ -192,6 +298,11 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
 
   qemu_epc_debug("realize");
 
+  // if (!s->socket) {
+  //   error_setg(errp, "qemu-epc: socket should be set");
+  //   return;
+  // }
+
   memory_region_init_io(&s->ctrl_mr, OBJECT(s), &qepc_ctrl_mmio_ops, s,
                         "qemu-epc/ctrl", pow2ceil(QEPC_CTRL_SIZE));
   // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
@@ -218,6 +329,16 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   //                  &s->ob_window_mr);
 }
 
+static void qepc_object_set_path (Object *obj, const char *str,
+                                   Error **errp)
+{
+  QEPCState *s = QEMU_EPC(obj);
+
+  qemu_epc_debug("socket path: %s", str);
+  s->sock_path = g_strdup(str);
+}
+
+/*
 static void qepc_object_set_socket(Object *obj, Visitor *v, const char *name,
                                    void *opaque, Error **errp) {
   QEPCState *s = QEMU_EPC(obj);
@@ -231,6 +352,7 @@ static void qepc_object_set_socket(Object *obj, Visitor *v, const char *name,
     return;
   }
 }
+*/
 
 static void qepc_class_init(ObjectClass *klass, void *data) {
   DeviceClass *dc = DEVICE_CLASS(klass);
@@ -239,8 +361,8 @@ static void qepc_class_init(ObjectClass *klass, void *data) {
 
   qemu_epc_debug("initialize class");
 
-  object_class_property_add(klass, "socket", "SocketAddress", NULL,
-                            qepc_object_set_socket, NULL, NULL);
+  object_class_property_add_str(klass, "path", NULL,
+                            qepc_object_set_path);
 
   k->realize = qepc_realize;
   // k->exit = qepc_exit;
