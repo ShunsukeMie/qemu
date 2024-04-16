@@ -28,8 +28,7 @@ struct QEPCState {
   PCIDevice dev;
 
   vfu_ctx_t *vfu;
-    int vfu_fd;
-  const char *vfu_sock_path;
+  int vfu_fd;
 
   const char *sock_path;
 
@@ -87,8 +86,10 @@ static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
 static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
-  // QEPCState *s = vfu_get_private(vfu_ctx);
+  QEPCState *s = vfu_get_private(vfu_ctx);
 
+    qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx", __func__, is_write ? "write" : "read",
+                   offset, count);
   return count;
 }
 
