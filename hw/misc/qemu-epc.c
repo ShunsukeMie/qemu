@@ -32,6 +32,8 @@ struct QEPCState {
 
   const char *sock_path;
 
+  uint8_t config_space[PCIE_CONFIG_SPACE_SIZE];
+
   /*< public >*/
   MemoryRegion ctrl_mr, pci_cfg_mr, bar_cfg_mr;
   MemoryRegion ob_window_mr;
@@ -86,18 +88,29 @@ static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
 static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
-  QEPCState *s = vfu_get_private(vfu_ctx);
+    QEPCState *s = vfu_get_private(vfu_ctx);
 
     qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx", __func__, is_write ? "write" : "read",
                    offset, count);
-  return count;
+
+    if (offset + count > PCIE_CONFIG_SPACE_SIZE) {
+        return 0;
+    }
+
+    if (is_write) {
+        memcpy(s->config_space + offset, buf, count);
+    } else {
+        memcpy(buf, s->config_space + offset, count);
+    }
+
+    return count;
 }
 
 /*
 static void *qepc_thread(void *opaque) {
   int err;
-  QEPCState *s = opaque;
-
+  kjkQEPCState *s = opaque;
+kj
   qemu_epc_debug("start thread vfu thread");
 
   s->vfu = vfu_create_ctx(VFU_TRANS_SOCK, s->sock_path,
@@ -181,7 +194,7 @@ retry:
     qemu_set_fd_handler(s->vfu_fd, qepc_vfu_run, NULL, s);
 }
 
-static void qepc_vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *msg){
+static void qepc_vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *msg) {
     qemu_epc_debug("vfu: %d: %s", level, msg);
 }
 
@@ -211,6 +224,7 @@ static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
     qemu_epc_debug("failed at vfu_setup_region");
     return -1;
   }
+
   // setup bars
   // setup irqs
   
@@ -309,6 +323,8 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
   //                    pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
 
+    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s), "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, s->config_space);
+
   // memory_region_init_io(&s->cfg_cfg_mr, OBJECT(s),
   // &qemu_epc_mmio_pci_cfg_ops,
   //                       s, "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE);
@@ -322,8 +338,8 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
 
   pci_register_bar(pci_dev, QEPC_BAR_CTRL, PCI_BASE_ADDRESS_MEM_TYPE_32,
                    &s->ctrl_mr);
-  // pci_register_bar(pci_dev, QEMU_EPC_BAR_PCI_CFG,
-  //                  PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
+  pci_register_bar(pci_dev, QEPC_BAR_PCI_CFG,
+                    PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
   // pci_register_bar(pci_dev, QEMU_EPC_BAR_BAR_CFG,
   //                  PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
   // pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
@@ -358,7 +374,6 @@ static void qepc_object_set_socket(Object *obj, Visitor *v, const char *name,
 static void qepc_class_init(ObjectClass *klass, void *data) {
   DeviceClass *dc = DEVICE_CLASS(klass);
   PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
-  // QEPCState *state = QEMU_EPC_CLASS(klass);
 
   qemu_epc_debug("initialize class");
 
