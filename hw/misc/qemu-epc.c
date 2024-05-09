@@ -11,6 +11,8 @@
 #include "qapi/qapi-visit-sockets.h"
 
 #include "hw/pci/pci_device.h"
+#include "hw/pci/msi.h"
+#include "hw/remote/vfio-user-obj.h"
 
 #include "libvfio-user.h"
 
@@ -32,7 +34,7 @@ struct QEPCState {
 
   const char *sock_path;
 
-  uint8_t config_space[PCIE_CONFIG_SPACE_SIZE];
+  PCIDevice *ep_pcidev;
 
   /*< public >*/
   MemoryRegion ctrl_mr, pci_cfg_mr, bar_cfg_mr;
@@ -89,6 +91,7 @@ static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
     QEPCState *s = vfu_get_private(vfu_ctx);
+    PCIDevice * eppdev = s->ep_pcidev;
 
     qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx", __func__, is_write ? "write" : "read",
                    offset, count);
@@ -98,9 +101,9 @@ static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
     }
 
     if (is_write) {
-        memcpy(s->config_space + offset, buf, count);
+        memcpy(eppdev->config + offset, buf, count);
     } else {
-        memcpy(buf, s->config_space + offset, count);
+        memcpy(buf, eppdev->config + offset, count);
     }
 
     return count;
@@ -310,8 +313,20 @@ static const MemoryRegionOps qepc_ctrl_mmio_ops = {
 
 static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   QEPCState *s = QEMU_EPC(pci_dev);
+  PCIDevice *ep_pci_dev;
 
   qemu_epc_debug("realize");
+
+  ep_pci_dev = g_malloc0(sizeof (PCIDevice));
+  ep_pci_dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
+  pci_config_alloc(ep_pci_dev);
+
+  msi_init(ep_pci_dev, 0, 1, true, true, errp);
+  msi_reset(ep_pci_dev);
+
+  vfu_setup_msi_cbs(ep_pci_dev);
+
+  s->ep_pcidev = ep_pci_dev;
 
   // if (!s->socket) {
   //   error_setg(errp, "qemu-epc: socket should be set");
@@ -323,7 +338,7 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
   //                    pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
 
-    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s), "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, s->config_space);
+    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s), "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, ep_pci_dev->config);
 
   // memory_region_init_io(&s->cfg_cfg_mr, OBJECT(s),
   // &qemu_epc_mmio_pci_cfg_ops,

@@ -1000,7 +1000,7 @@ static void pci_init_multifunction(PCIBus *bus, PCIDevice *dev, Error **errp)
     }
 }
 
-static void pci_config_alloc(PCIDevice *pci_dev)
+void pci_config_alloc(PCIDevice *pci_dev)
 {
     int config_size = pci_config_size(pci_dev);
 
@@ -1011,7 +1011,7 @@ static void pci_config_alloc(PCIDevice *pci_dev)
     pci_dev->used = g_malloc0(config_size);
 }
 
-static void pci_config_free(PCIDevice *pci_dev)
+void pci_config_free(PCIDevice *pci_dev)
 {
     g_free(pci_dev->config);
     g_free(pci_dev->cmask);

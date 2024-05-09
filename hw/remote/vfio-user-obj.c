@@ -588,15 +588,20 @@ static void vfu_object_msi_trigger(PCIDevice *pci_dev, MSIMessage msg)
     vfu_irq_trigger(vfu_ctx, msg.data);
 }
 
+void vfu_setup_msi_cbs(PCIDevice *pci_dev)
+{
+    pci_dev->msi_trigger = vfu_object_msi_trigger;              
+    pci_dev->msi_prepare_message = vfu_object_msi_prepare_msg;  
+    pci_dev->msix_prepare_message = vfu_object_msi_prepare_msg; 
+}
+
 static void vfu_object_setup_msi_cbs(VfuObject *o)
 {
     o->default_msi_trigger = o->pci_dev->msi_trigger;
     o->default_msi_prepare_message = o->pci_dev->msi_prepare_message;
     o->default_msix_prepare_message = o->pci_dev->msix_prepare_message;
 
-    o->pci_dev->msi_trigger = vfu_object_msi_trigger;
-    o->pci_dev->msi_prepare_message = vfu_object_msi_prepare_msg;
-    o->pci_dev->msix_prepare_message = vfu_object_msi_prepare_msg;
+    vfu_setup_msi_cbs(o->pci_dev);
 }
 
 static void vfu_object_restore_msi_cbs(VfuObject *o)
