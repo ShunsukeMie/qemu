@@ -29,6 +29,8 @@
 #define NUM_OB_WINDOW 5
 #define OB_WINDOW_SIZE 0x40000000ULL
 
+#define SUPPORT_RC_NUM_MRS 5
+
 struct QEPCState {
   /*< private >*/
   PCIDevice dev;
@@ -63,6 +65,15 @@ struct QEPCState {
   } obs[NUM_OB_WINDOW];
   uint8_t ob_mask;
   uint8_t ob_idx;
+
+  struct rc_mr {
+	uint64_t rc_phys;
+	void *vaddr;
+	uint64_t size;
+  } rc_mrs[SUPPORT_RC_NUM_MRS];
+  int rc_mr_idx;
+
+  MemoryRegion rc_local_mr[NUM_OB_WINDOW];
 };
 
 #define TYPE_QEMU_EPC "qemu-epc"
@@ -337,20 +348,36 @@ static qepc_bar_access_handler_t qepc_bar_handlers[] = {
 
 static void qepc_dma_register(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
 {
-    //QEPCState *s = vfu_get_private(vfu_ctx);
+    QEPCState *s = vfu_get_private(vfu_ctx);
 
-	/*
-	info->iova;
-	info->vaddr;
-	info->mapping;
-	info->page_size;
-	info->prot;
-	*/
+	qemu_epc_debug("%s: register 0x%lx, 0x%lx", __func__,
+			(uint64_t)info->iova.iov_base, info->iova.iov_len);
+
+	if (!info->vaddr) {
+		qemu_epc_debug("unsupported");
+		return;
+	}
+
+	qemu_epc_debug("%s: vaddr 0x%p", __func__, info->vaddr);
+
+	if (s->rc_mr_idx == SUPPORT_RC_NUM_MRS) {
+		qemu_epc_debug("unsupported");
+		return;
+	}
+
+	s->rc_mrs[s->rc_mr_idx] =  (struct rc_mr){
+		.rc_phys = (uint64_t)info->iova.iov_base,
+		.size = info->iova.iov_len,
+		.vaddr = info->vaddr,
+	};
+	s->rc_mr_idx++;
 }
 
 static void qepc_dma_unregister(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
 {
     //QEPCState *s = vfu_get_private(vfu_ctx);
+	qemu_epc_debug("%s: unregister 0x%lx, 0x%lx", __func__,
+			(uint64_t)info->iova.iov_base, info->iova.iov_len);
 }
 
 static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
@@ -439,9 +466,44 @@ static void qepc_handle_ctrl_irq(QEPCState *s, int irq_num)
 
 static void qepc_handle_enable_disale_ob(QEPCState *s, uint64_t val)
 {
-	s->ob_mask = val;
+	uint8_t prev = s->ob_mask;
 
-	//TODO: map
+	for(int i=0; i<NUM_OB_WINDOW; i++) {
+		uint8_t bit = (1 << i);
+
+		if ((prev & bit) == (val & bit))
+			continue;
+
+		if (prev & bit) {
+			qemu_epc_debug("disable ob is not supported yet");
+		} else {
+			qemu_epc_debug("enable ob");
+		}
+
+		for(int j=0; j < SUPPORT_RC_NUM_MRS; j++) {
+
+			if (s->rc_mrs[j].rc_phys <= s->obs[i].pci
+					&& (s->obs[i].pci + s->obs[i].size) <=
+					s->rc_mrs[j].rc_phys + s->rc_mrs[j].size) {
+
+				uint64_t off = s->obs[i].pci - s->rc_mrs[j].rc_phys;
+
+				void *start = s->rc_mrs[j].vaddr + off;
+				uint64_t size = s->obs[i].size;
+
+				//sprintf(s->rc_local_mr_name, "qemu-epc/rc-local-%d", 0);
+				memory_region_init_ram_ptr(&s->rc_local_mr[0], OBJECT(s),
+						"qemu-epc/rc-local-0", size, start);
+
+				AddressSpace *as = pci_device_iommu_address_space(&s->dev);
+
+				memory_region_add_subregion(as->root, s->ob_window_mr.addr,
+						&s->rc_local_mr[0]);
+				goto done;
+			}
+		}
+	}
+done:
 }
 
 static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
