@@ -1,5 +1,6 @@
 /*
  * QEMU PCI Endpoint Controller device
+			__func__, is_write ? "write" : "read", offset, count);
  */
 
 #include "qemu/osdep.h"
@@ -34,19 +35,32 @@ struct QEPCState {
 
   const char *sock_path;
 
-  PCIDevice *ep_pcidev;
+  //PCIDevice *ep_pcidev;
 
   /*< public >*/
   MemoryRegion ctrl_mr, pci_cfg_mr, bar_cfg_mr;
   MemoryRegion ob_window_mr;
 
   QemuThread thread;
+
+  struct {
+	uint64_t phys_addr;
+	uint64_t size;
+	uint8_t flags;
+  } bars[6];
+
+  uint8_t bar_mask;
+  uint8_t bar_no;
+
+  uint8_t pcie_config[PCIE_CONFIG_SPACE_SIZE];
 };
 
 #define TYPE_QEMU_EPC "qemu-epc"
 OBJECT_DECLARE_SIMPLE_TYPE(QEPCState, QEMU_EPC)
 
-#define QEPC_REVISION 0x01
+#define QEPC_REVISION 0x00
+
+#define QEPC_BAR_CFG_SIZE 1024
 
 enum {
   QEPC_BAR_CTRL = 0,
@@ -87,11 +101,54 @@ static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
   return 0;
 }
 
+static ssize_t qepc_pci_cfg_access_bar(QEPCState *s,  char *const buf,
+                                   size_t count, loff_t offset,
+                                   const bool is_write)
+{
+	uint32_t t1, t2;
+
+    qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx",
+			__func__, is_write ? "write" : "read", offset, count);
+
+	assert(count == sizeof(uint32_t));
+
+	if (is_write) {
+		switch(offset) {
+			case 0x10: // BAR 0
+				memcpy(&t1, buf, sizeof(t1));
+				//t2 = 0xfffffff0 & t1;
+				t2 = (~(uint32_t)s->bars[0].size + 1) & t1;
+				memcpy(s->pcie_config + offset, &t2, sizeof(t2));
+				break;
+			case 0x18: // BAR 2
+				memcpy(&t1, buf, sizeof(t1));
+				//t2 = 0xfffffff0 & t1;
+				t2 = (~(uint32_t)s->bars[2].size + 1) & t1;
+				memcpy(s->pcie_config + offset, &t2, sizeof(t2));
+				break;
+			case 0x20: // BAR 4
+				memcpy(&t1, buf, sizeof(t1));
+				//t2 = 0xfffffff0 & t1;
+				t2 = (~(uint32_t)s->bars[4].size + 1) & t1;
+				memcpy(s->pcie_config + offset, &t2, sizeof(t2));
+				break;
+			default:
+				memcpy(s->pcie_config + offset, buf, count);
+		}
+	} else {
+		memcpy(&t1, s->pcie_config + offset, sizeof(t1));
+		qemu_epc_debug("off 0x%lx: value 0x%x", offset, t1);
+		memcpy(buf, s->pcie_config + offset, count);
+	}
+
+	return count;
+}
+
 static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
     QEPCState *s = vfu_get_private(vfu_ctx);
-    PCIDevice * eppdev = s->ep_pcidev;
+    ///PCIDevice * eppdev = s->ep_pcidev;
 
     qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx", __func__, is_write ? "write" : "read",
                    offset, count);
@@ -99,11 +156,15 @@ static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
     if (offset + count > PCIE_CONFIG_SPACE_SIZE) {
         return 0;
     }
+	if (offset >= 0x10 && offset < 0x28)
+		return qepc_pci_cfg_access_bar(s, buf, count, offset, is_write);
 
     if (is_write) {
-        memcpy(eppdev->config + offset, buf, count);
+        memcpy(s->pcie_config + offset, buf, count);
+		qemu_epc_debug("cfg access: write: count %ld", count);
     } else {
-        memcpy(buf, eppdev->config + offset, count);
+		qemu_epc_debug("cfg access: read: count %ld", count);
+        memcpy(buf, s->pcie_config + offset, count);
     }
 
     return count;
@@ -201,6 +262,50 @@ static void qepc_vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *msg) {
     qemu_epc_debug("vfu: %d: %s", level, msg);
 }
 
+
+static ssize_t qepc_bar_access(vfu_ctx_t *vfu_ctx, uint8_t barno,
+		char *const buf, size_t count, loff_t offset, const bool is_write) {
+
+    QEPCState *s = vfu_get_private(vfu_ctx);
+	dma_addr_t addr;
+
+	qemu_epc_debug("%s for bar %d:", __func__, barno);
+
+	addr = s->bars[barno].phys_addr + offset;
+
+	if (is_write)
+		pci_dma_write(&s->dev, addr, buf, count);
+	else
+		pci_dma_read(&s->dev, addr, buf, count);
+
+	return count;
+}
+
+#define QEPC_ACCESS_BAR(barno) \
+	static ssize_t qepc_bar_access_ ## barno (vfu_ctx_t *vfu_ctx, char *const buf, \
+                                   size_t count, loff_t offset, \
+                                   const bool is_write) \
+	{ return qepc_bar_access(vfu_ctx, barno, buf, count, offset, is_write); }
+
+QEPC_ACCESS_BAR(0)
+QEPC_ACCESS_BAR(1)
+QEPC_ACCESS_BAR(2)
+QEPC_ACCESS_BAR(3)
+QEPC_ACCESS_BAR(4)
+QEPC_ACCESS_BAR(5)
+
+typedef ssize_t (*qepc_bar_access_handler_t)(vfu_ctx_t *vfu_ctx,
+			char *const buf, size_t count, loff_t offset, const bool is_write);
+
+static qepc_bar_access_handler_t qepc_bar_handlers[] = {
+	qepc_bar_access_0,
+	qepc_bar_access_1,
+	qepc_bar_access_2,
+	qepc_bar_access_3,
+	qepc_bar_access_4,
+	qepc_bar_access_5
+};
+
 static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
   int err;
 
@@ -229,8 +334,25 @@ static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
   }
 
   // setup bars
+  for(int i=0; i < PCI_NUM_REGIONS; i++) {
+
+	if (!(s->bar_mask & (1 << i)))
+		continue;
+
+	qemu_epc_debug("setup bar %d: size 0x%lx", i, s->bars[i].size);
+
+	err = vfu_setup_region(s->vfu, VFU_PCI_DEV_BAR0_REGION_IDX + i,
+			s->bars[i].size, qepc_bar_handlers[i],
+			VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB, NULL,
+                         0, -1, 0);
+	if (err) {
+		qemu_epc_debug("failed at vfu_setup_region for bar");
+		return -1;
+	}
+  }
+
+
   // setup irqs
-  
   err = vfu_realize_ctx(s->vfu);
   if (err) {
     qemu_epc_debug("failed at vfu_realize_ctx");
@@ -308,15 +430,83 @@ static const MemoryRegionOps qepc_ctrl_mmio_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+enum {
+	QEPC_BAR_CFG_OFF_MASK = 0x00,
+	QEPC_BAR_CFG_OFF_NUMBER = 0x01,
+	QEPC_BAR_CFG_OFF_FLAGS = 0x02,
+	QEPC_BAR_CFG_OFF_RSV = 0x04,
+	QEPC_BAR_CFG_OFF_PHYS_ADDR = 0x08,
+	QEPC_BAR_CFG_OFF_SIZE = 0x10,
+};
+
+static uint64_t qepc_cfg_bar_read(void *opaque, hwaddr addr, unsigned size) {
+	QEPCState *s = opaque;
+
+	switch(addr) {
+		case QEPC_BAR_CFG_OFF_MASK:
+			return s->bar_mask;
+		default:
+			break;
+	}
+
+	return 0;
+}
+
+static void qepc_cfg_bar_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size) {
+  QEPCState *s = opaque;
+  void *ptr;
+  uint64_t tmp;
+
+  if (addr + size > QEPC_BAR_CFG_OFF_SIZE + 8)
+	  qemu_epc_debug("%s: overrun %ld", __func__, addr + size);
+
+  switch(addr) {
+	case QEPC_BAR_CFG_OFF_MASK:
+		s->bar_mask = val;
+		break;
+	case QEPC_BAR_CFG_OFF_NUMBER:
+		s->bar_no = val;
+		break;
+	case QEPC_BAR_CFG_OFF_FLAGS:
+		s->bars[s->bar_no].flags = val;
+		ptr = s->pcie_config + 0x10 + 4 * s->bar_no;
+		memcpy(&tmp, ptr, sizeof(uint64_t));
+		tmp = (val & 0xf) | (tmp & 0xfffffff0) | 0x4;
+		memcpy(ptr, &tmp, sizeof(uint64_t));
+		qemu_epc_debug("%s: bar[%d] 0x%lx (flags %lx)", __func__, s->bar_no, tmp, val);
+		break;
+	case QEPC_BAR_CFG_OFF_RSV:
+		break;
+	case QEPC_BAR_CFG_OFF_PHYS_ADDR:
+		s->bars[s->bar_no].phys_addr = val;
+		ptr = s->pcie_config + 0x10 + 4 * s->bar_no;
+		memcpy(&tmp, ptr, sizeof(uint64_t));
+		tmp = (val & 0xfffffff0) | (tmp & 0xf);
+		memcpy(ptr, &tmp, sizeof(uint64_t));
+		qemu_epc_debug("%s: bar[%d] 0x%lx(addr %lx)", __func__, s->bar_no, tmp, val);
+		break;
+	case QEPC_BAR_CFG_OFF_SIZE:
+		s->bars[s->bar_no].size = val;
+		break;
+  }
+}
+
+static const MemoryRegionOps qemu_epc_mmio_bar_cfg_ops = {
+	.read = qepc_cfg_bar_read,
+	.write = qepc_cfg_bar_write,
+	.endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 #define NUM_OB_WINDOW 5
 #define OB_WINDOW_SIZE 0x40000000ULL
 
 static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   QEPCState *s = QEMU_EPC(pci_dev);
-  PCIDevice *ep_pci_dev;
 
   qemu_epc_debug("realize");
 
+  /*
   ep_pci_dev = g_malloc0(sizeof (PCIDevice));
   ep_pci_dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
   pci_config_alloc(ep_pci_dev);
@@ -327,6 +517,7 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   vfu_setup_msi_cbs(ep_pci_dev);
 
   s->ep_pcidev = ep_pci_dev;
+  */
 
   // if (!s->socket) {
   //   error_setg(errp, "qemu-epc: socket should be set");
@@ -338,15 +529,16 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
   // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
   //                    pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
 
-    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s), "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, ep_pci_dev->config);
+    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s),
+			"qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, s->pcie_config);
 
   // memory_region_init_io(&s->cfg_cfg_mr, OBJECT(s),
   // &qemu_epc_mmio_pci_cfg_ops,
   //                       s, "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE);
-  // memory_region_init_io(&s->bar_cfg_mr, OBJECT(s),
-  // &qemu_epc_mmio_bar_cfg_ops,
-  //                       s, "qemu-epc/bar-cfg",
-  //                       pow2ceil(QEMU_EPC_BAR_CFG_SIZE));
+   memory_region_init_io(&s->bar_cfg_mr, OBJECT(s),
+	&qemu_epc_mmio_bar_cfg_ops,
+                         s, "qemu-epc/bar-cfg",
+                         pow2ceil(QEPC_BAR_CFG_SIZE));
   // memory_region_init_io(&s->ob_window_mr, OBJECT(s),
   //                       &qemu_epc_mmio_ob_window_ops, s,
   //                       "qemu-epc/ob_window", QEMU_EPC_OB_WINDOW_SIZE);
@@ -355,8 +547,9 @@ static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
                    &s->ctrl_mr);
   pci_register_bar(pci_dev, QEPC_BAR_PCI_CFG,
                     PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
-  // pci_register_bar(pci_dev, QEMU_EPC_BAR_BAR_CFG,
-  //                  PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
+  pci_register_bar(pci_dev, QEPC_BAR_BAR_CFG,
+                    PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
+
   // pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
   //                  &s->ob_window_mr);
 }
