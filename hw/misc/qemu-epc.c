@@ -35,8 +35,6 @@ struct QEPCState {
 
   const char *sock_path;
 
-  //PCIDevice *ep_pcidev;
-
   /*< public >*/
   MemoryRegion ctrl_mr, pci_cfg_mr, bar_cfg_mr;
   MemoryRegion ob_window_mr;
@@ -149,7 +147,6 @@ static ssize_t qepc_pci_cfg_access(vfu_ctx_t *vfu_ctx, char *const buf,
                                    size_t count, loff_t offset,
                                    const bool is_write) {
     QEPCState *s = vfu_get_private(vfu_ctx);
-    ///PCIDevice * eppdev = s->ep_pcidev;
 
     qemu_epc_debug("%s: %s: offset 0x%lx, size 0x%lx", __func__, is_write ? "write" : "read",
                    offset, count);
