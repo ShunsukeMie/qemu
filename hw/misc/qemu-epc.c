@@ -53,6 +53,7 @@ struct QEPCState {
   uint8_t bar_no;
 
   uint8_t pcie_config[PCIE_CONFIG_SPACE_SIZE];
+  uint8_t irq_type;
 };
 
 #define TYPE_QEMU_EPC "qemu-epc"
@@ -353,6 +354,12 @@ static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
 
 
   // setup irqs
+  err = vfu_setup_device_nr_irqs(s->vfu, VFU_DEV_INTX_IRQ, 1);
+  if (err < 0) {
+	  qemu_epc_debug("failed to setup irq");
+	  return err;
+  }
+
   err = vfu_realize_ctx(s->vfu);
   if (err) {
     qemu_epc_debug("failed at vfu_realize_ctx");
@@ -371,6 +378,11 @@ static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
   return 0;
 }
 
+static void qepc_handle_ctrl_irq(QEPCState *s, int irq_num)
+{
+	vfu_irq_trigger(s->vfu, 0);
+}
+
 static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size) {
   QEPCState *s = opaque;
@@ -383,10 +395,10 @@ static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
     qepc_ctrl_handle_start(s, val);
     return;
   case QEPC_CTRL_OFF_IRQ_TYPE:
-    // s->irq_type = val;
+    s->irq_type = val;
     break;
   case QEPC_CTRL_OFF_IRQ_NUM:
-    // qemu_epc_handle_ctl_irq(s, val);
+    qepc_handle_ctrl_irq(s, val);
     break;
   case QEPC_CTRL_OFF_OB_IDX:
     // s->ob_idx = val;
