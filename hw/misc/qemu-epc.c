@@ -26,6 +26,9 @@
   } while (0)
 #endif
 
+#define NUM_OB_WINDOW 5
+#define OB_WINDOW_SIZE 0x40000000ULL
+
 struct QEPCState {
   /*< private >*/
   PCIDevice dev;
@@ -52,6 +55,14 @@ struct QEPCState {
 
   uint8_t pcie_config[PCIE_CONFIG_SPACE_SIZE];
   uint8_t irq_type;
+
+  struct {
+	  uint64_t phys;
+	  uint64_t pci;
+	  uint64_t size;
+  } obs[NUM_OB_WINDOW];
+  uint8_t ob_mask;
+  uint8_t ob_idx;
 };
 
 #define TYPE_QEMU_EPC "qemu-epc"
@@ -68,6 +79,22 @@ enum {
   QEPC_BAR_OB_WINDOWS = 3,
 };
 
+enum {
+	QEPC_CTRL_OFF_START		= 0x00,
+	QEPC_CTRL_OFF_WIN_START = 0x08,
+	QEPC_CTRL_OFF_WIN_SIZE	= 0x10,
+	QEPC_CTRL_OFF_IRQ_TYPE	= 0x18,
+	QEPC_CTRL_OFF_IRQ_NUM	= 0x1c,
+	QEPC_CTRL_OFF_OB_MASK	= 0x20,
+  	QEPC_CTRL_OFF_OB_IDX	= 0x24,
+    QEPC_CTRL_OFF_OB_PHYS	= 0x28,
+    QEPC_CTRL_OFF_OB_PCI	= 0x30,
+    QEPC_CTRL_OFF_OB_SIZE	= 0x38,
+
+	QEPC_CTRL_SIZE	= QEPC_CTRL_OFF_OB_SIZE + sizeof(uint64_t)
+};
+
+/*
 #define QEPC_CTRL_OFF_START (0x00)
 #define QEPC_CTRL_OFF_WIN_START (0x08)
 #define QEPC_CTRL_OFF_WIN_SIZE (0x10)
@@ -79,6 +106,7 @@ enum {
 #define QEPC_CTRL_OFF_OB_PCI (0x30)
 #define QEPC_CTRL_OFF_OB_SIZE (0x38)
 #define QEPC_CTRL_SIZE (QEPC_CTRL_OFF_OB_SIZE + sizeof(uint64_t))
+*/
 
 static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
   QEPCState *s = opaque;
@@ -91,10 +119,13 @@ static uint64_t qepc_ctrl_mmio_read(void *opaque, hwaddr addr, unsigned size) {
   case QEPC_CTRL_OFF_WIN_START + sizeof(uint32_t):
     return s->ob_window_mr.addr >> 32;
   case QEPC_CTRL_OFF_WIN_SIZE:
-    return 0x100000;
+    return OB_WINDOW_SIZE & 0xffffffff;
   case QEPC_CTRL_OFF_WIN_SIZE + sizeof(uint32_t):
-    return 0;
+    return OB_WINDOW_SIZE >> 32;
+  case QEPC_CTRL_OFF_OB_MASK:
+	return s->ob_mask;
   default:;
+	qemu_epc_debug("unhandled read: off %ld", addr);
   }
 
   return 0;
@@ -304,6 +335,24 @@ static qepc_bar_access_handler_t qepc_bar_handlers[] = {
 	qepc_bar_access_5
 };
 
+static void qepc_dma_register(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
+{
+    //QEPCState *s = vfu_get_private(vfu_ctx);
+
+	/*
+	info->iova;
+	info->vaddr;
+	info->mapping;
+	info->page_size;
+	info->prot;
+	*/
+}
+
+static void qepc_dma_unregister(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
+{
+    //QEPCState *s = vfu_get_private(vfu_ctx);
+}
+
 static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
   int err;
 
@@ -357,6 +406,14 @@ static int qepc_ctrl_handle_start(QEPCState *s, uint64_t val) {
 	  return err;
   }
 
+
+  // setup for dma
+  err = vfu_setup_device_dma(s->vfu, qepc_dma_register, qepc_dma_unregister);
+  if (err) {
+	  qemu_epc_debug("failed to setup dma");
+	  return -1;
+  }
+
   err = vfu_realize_ctx(s->vfu);
   if (err) {
     qemu_epc_debug("failed at vfu_realize_ctx");
@@ -380,10 +437,17 @@ static void qepc_handle_ctrl_irq(QEPCState *s, int irq_num)
 	vfu_irq_trigger(s->vfu, 0);
 }
 
+static void qepc_handle_enable_disale_ob(QEPCState *s, uint64_t val)
+{
+	s->ob_mask = val;
+
+	//TODO: map
+}
+
 static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size) {
   QEPCState *s = opaque;
-  // uint64_t *tmp;
+  uint64_t tmp;
 
   qemu_epc_debug("CTRL write: addr 0x%lx, size 0x%x", addr, size);
 
@@ -397,39 +461,47 @@ static void qepc_ctrl_mmio_write(void *opaque, hwaddr addr, uint64_t val,
   case QEPC_CTRL_OFF_IRQ_NUM:
     qepc_handle_ctrl_irq(s, val);
     break;
+  case QEPC_CTRL_OFF_OB_MASK:
+	qepc_handle_enable_disale_ob(s, val);
+	break;
   case QEPC_CTRL_OFF_OB_IDX:
-    // s->ob_idx = val;
+    s->ob_idx = val;
     break;
   case QEPC_CTRL_OFF_OB_PHYS:
-    // tmp = &s->ob_map[s->ob_idx].phys;
-    // *tmp = (*tmp & ~0xffffffff) | val;
+    tmp = s->obs[s->ob_idx].phys;
+	tmp = (tmp & ~0xffffffffUL) | (val & 0xffffffff);
+    s->obs[s->ob_idx].phys = tmp;
     break;
   case QEPC_CTRL_OFF_OB_PHYS + sizeof(uint32_t):
-    // tmp = &s->ob_map[s->ob_idx].phys;
-    // *tmp = (*tmp & 0xffffffff) | (val << 32);
-    // qemu_epc_debug("ob map phys: %d: 0x%lx\n", s->ob_idx, *tmp);
+    tmp = s->obs[s->ob_idx].phys;
+    tmp = (tmp & 0xffffffff) | (val << 32);
+	s->obs[s->ob_idx].phys = tmp;
+    qemu_epc_debug("ob map phys: %d: 0x%lx", s->ob_idx, tmp);
     break;
   case QEPC_CTRL_OFF_OB_PCI:
-    // tmp = &s->ob_map[s->ob_idx].pci;
-    // *tmp = (*tmp & ~0xffffffff) | val;
+    tmp = s->obs[s->ob_idx].pci;
+    tmp = (tmp & ~0xffffffff) | (val & 0xffffffff);
+    s->obs[s->ob_idx].pci = tmp;
     break;
   case QEPC_CTRL_OFF_OB_PCI + sizeof(uint32_t):
-    // tmp = &s->ob_map[s->ob_idx].pci;
-    // *tmp = (*tmp & 0xffffffff) | (val << 32);
-    // qemu_epc_debug("ob map pci: %d: 0x%lx\n", s->ob_idx, *tmp);
+    tmp = s->obs[s->ob_idx].pci;
+    tmp = (tmp & 0xffffffff) | (val << 32);
+    s->obs[s->ob_idx].pci = tmp;
+    qemu_epc_debug("ob map pci: %d: 0x%lx", s->ob_idx, tmp);
     break;
   case QEPC_CTRL_OFF_OB_SIZE:
-    // tmp = &s->ob_map[s->ob_idx].size;
-    // *tmp = (*tmp & ~0xffffffff) | val;
+    tmp = s->obs[s->ob_idx].size;
+    tmp = (tmp & ~0xffffffff) | (val & 0xffffffff);
+    s->obs[s->ob_idx].size = tmp;
     break;
   case QEPC_CTRL_OFF_OB_SIZE + sizeof(uint32_t):
-    // tmp = &s->ob_map[s->ob_idx].size;
-    // *tmp = (*tmp & 0xffffffff) | (val << 32);
-    // qemu_epc_debug("ob map size: %d: 0x%lx\n", s->ob_idx, *tmp);
+    tmp = s->obs[s->ob_idx].size;
+    tmp = (tmp & 0xffffffff) | (val << 32);
+    s->obs[s->ob_idx].size = tmp;
+    qemu_epc_debug("ob map size: %d: 0x%lx", s->ob_idx, tmp);
     break;
   default:
-      // qemu_epc_debug("CTRL write: invalid address 0x%lx\n", addr);
-      ;
+       qemu_epc_debug("CTRL write: invalid address 0x%lx", addr);
   }
 }
 
@@ -507,8 +579,6 @@ static const MemoryRegionOps qemu_epc_mmio_bar_cfg_ops = {
 	.endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-#define NUM_OB_WINDOW 5
-#define OB_WINDOW_SIZE 0x40000000ULL
 
 static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
 	QEPCState *s = QEMU_EPC(pci_dev);
