@@ -514,56 +514,37 @@ static const MemoryRegionOps qemu_epc_mmio_bar_cfg_ops = {
 #define OB_WINDOW_SIZE 0x40000000ULL
 
 static void qepc_realize(PCIDevice *pci_dev, Error **errp) {
-  QEPCState *s = QEMU_EPC(pci_dev);
+	QEPCState *s = QEMU_EPC(pci_dev);
 
-  qemu_epc_debug("realize");
+	qemu_epc_debug("realize");
 
-  /*
-  ep_pci_dev = g_malloc0(sizeof (PCIDevice));
-  ep_pci_dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
-  pci_config_alloc(ep_pci_dev);
+	if (!s->sock_path) {
+	  error_setg(errp, "qemu-epc: sock_path should be set");
+	  return;
+	}
 
-  msi_init(ep_pci_dev, 0, 1, true, true, errp);
-  msi_reset(ep_pci_dev);
+	memory_region_init_io(&s->ctrl_mr, OBJECT(s), &qepc_ctrl_mmio_ops, s,
+			"qemu-epc/ctrl", pow2ceil(QEPC_CTRL_SIZE));
 
-  vfu_setup_msi_cbs(ep_pci_dev);
-
-  s->ep_pcidev = ep_pci_dev;
-  */
-
-  // if (!s->socket) {
-  //   error_setg(errp, "qemu-epc: socket should be set");
-  //   return;
-  // }
-
-  memory_region_init_io(&s->ctrl_mr, OBJECT(s), &qepc_ctrl_mmio_ops, s,
-                        "qemu-epc/ctrl", pow2ceil(QEPC_CTRL_SIZE));
-  // memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
-  //                    pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
-
-    memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s),
+	memory_region_init_ram_ptr(&s->pci_cfg_mr, OBJECT(s),
 			"qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE, s->pcie_config);
 
-  // memory_region_init_io(&s->cfg_cfg_mr, OBJECT(s),
-  // &qemu_epc_mmio_pci_cfg_ops,
-  //                       s, "qemu-epc/cfg-cfg", PCIE_CONFIG_SPACE_SIZE);
-   memory_region_init_io(&s->bar_cfg_mr, OBJECT(s),
-	&qemu_epc_mmio_bar_cfg_ops,
-                         s, "qemu-epc/bar-cfg",
-                         pow2ceil(QEPC_BAR_CFG_SIZE));
-  // memory_region_init_io(&s->ob_window_mr, OBJECT(s),
-  //                       &qemu_epc_mmio_ob_window_ops, s,
-  //                       "qemu-epc/ob_window", QEMU_EPC_OB_WINDOW_SIZE);
+	memory_region_init_io(&s->bar_cfg_mr, OBJECT(s),
+			&qemu_epc_mmio_bar_cfg_ops,
+			s, "qemu-epc/bar-cfg",
+			pow2ceil(QEPC_BAR_CFG_SIZE));
 
-  pci_register_bar(pci_dev, QEPC_BAR_CTRL, PCI_BASE_ADDRESS_MEM_TYPE_32,
-                   &s->ctrl_mr);
-  pci_register_bar(pci_dev, QEPC_BAR_PCI_CFG,
-                    PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
-  pci_register_bar(pci_dev, QEPC_BAR_BAR_CFG,
-                    PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
+	memory_region_init(&s->ob_window_mr, NULL, "qemu-epc/ob",
+			pow2ceil(NUM_OB_WINDOW * OB_WINDOW_SIZE));
+	pci_register_bar(pci_dev, QEPC_BAR_CTRL, PCI_BASE_ADDRESS_MEM_TYPE_32,
+			&s->ctrl_mr);
+	pci_register_bar(pci_dev, QEPC_BAR_PCI_CFG,
+			PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_cfg_mr);
+	pci_register_bar(pci_dev, QEPC_BAR_BAR_CFG,
+			PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar_cfg_mr);
 
-  // pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
-  //                  &s->ob_window_mr);
+	pci_register_bar(pci_dev, QEPC_BAR_OB_WINDOWS, PCI_BASE_ADDRESS_MEM_TYPE_64,
+			&s->ob_window_mr);
 }
 
 static void qepc_object_set_path (Object *obj, const char *str,
